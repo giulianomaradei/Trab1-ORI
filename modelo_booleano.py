@@ -3,7 +3,7 @@ import os
 import spacy
 import string
 
-nlp = spacy.load("pt_core_news_sm")
+nlp = spacy.load("pt_core_news_lg")
 
 def ler_base(arquivo_base):
     print(f"Current working directory: {os.getcwd()}")
@@ -27,75 +27,65 @@ def ler_consulta(arquivo_consulta):
 
 def preprocessar_texto(texto):
     doc = nlp(texto.lower())
-    return [token.lemma_ for token in doc if not token.is_stop and token.is_alpha]
+    lemas = set()  # Usamos um conjunto para garantir unicidade
+    for token in doc:
+        if (not token.is_stop and ' ' not in token.lemma_ and not token.is_punct):
+            lemas.add(token.lemma_.lower())  # Convertemos para minúsculas aqui
+    return list(lemas)
 
 def gerar_indice_invertido(arquivos):
     indice = {}
     for arquivo in arquivos:
         with open(arquivo, 'r', encoding='utf-8') as f:
             texto = f.read()
-        termos = preprocessar_texto(texto)
+        termos = preprocessar_texto(texto)  # Já retorna uma lista de lemas únicos
         for termo in termos:
             if termo not in indice:
                 indice[termo] = {}
-            if arquivo not in indice[termo]:
-                indice[termo][arquivo] = 0
-            indice[termo][arquivo] += 1
+            indice[termo][arquivo] = indice[termo].get(arquivo, 0) + 1
     return indice
 
 def processar_consulta(consulta, indice, arquivos):
-    def not_op(conjunto):
-        return set(arquivos) - conjunto
-
-    def and_op(conjunto1, conjunto2):
-        return conjunto1 & conjunto2
-
-    def or_op(conjunto1, conjunto2):
-        return conjunto1 | conjunto2
-
-    def avaliar_termo(termo):
-        return set(indice.get(termo, {}).keys())
+    def avaliar_termo(termo, negado=False):
+        termo_processado = nlp(termo.lower())[0].lemma_.lower()  # Convertemos para minúsculas aqui
+        resultado = set(indice.get(termo_processado, {}).keys())
+        return set(arquivos) - resultado if negado else resultado
 
     termos = consulta.split()
-    pilha = []
+    resultado = set(arquivos)
+    operacao_atual = '&'
+
     for termo in termos:
-        if termo == '&':
-            op2, op1 = pilha.pop(), pilha.pop()
-            pilha.append(and_op(op1, op2))
-        elif termo == '|':
-            while len(pilha) >= 3 and pilha[-2] == '&':
-                op3, op2, op1 = pilha.pop(), pilha.pop(), pilha.pop()
-                pilha.append(and_op(op1, op3))
-            pilha.append(termo)
-        elif termo.startswith('!'):
-            pilha.append(not_op(avaliar_termo(nlp(termo[1:].lower())[0].lemma_)))
+        if termo in {'&', '|'}:
+            operacao_atual = termo
+        elif termo == '!':
+            continue
         else:
-            pilha.append(avaliar_termo(nlp(termo.lower())[0].lemma_))
+            negado = termos[termos.index(termo) - 1] == '!' if termos.index(termo) > 0 else False
+            termo_resultado = avaliar_termo(termo, negado)
 
-    while len(pilha) > 1:
-        op2, op, op1 = pilha.pop(), pilha.pop(), pilha.pop()
-        if op == '&':
-            pilha.append(and_op(op1, op2))
-        elif op == '|':
-            pilha.append(or_op(op1, op2))
+            if operacao_atual == '&':
+                resultado &= termo_resultado
+            elif operacao_atual == '|':
+                resultado |= termo_resultado
 
-    return pilha[0]
+    return resultado
 
 def salvar_indice(indice):
-    # Criar um mapeamento de nomes de arquivo para números
     arquivos_unicos = sorted(set(doc for termo in indice.values() for doc in termo.keys()))
     arquivo_para_numero = {arquivo: i+1 for i, arquivo in enumerate(arquivos_unicos)}
 
     with open('indice.txt', 'w', encoding='utf-8') as f:
-        for termo in sorted(indice.keys()):
-            # Criar uma lista de pares "documento,frequência" ordenada por número do documento
+        for termo in sorted(indice.keys(), key=lambda x: x.lower()):  # Ordenamos ignorando maiúsculas/minúsculas
             doc_freq_pairs = sorted(
                 [(arquivo_para_numero[doc], freq) for doc, freq in indice[termo].items()],
                 key=lambda x: x[0]
             )
-            # Formatar a linha de saída
-            linha = f"{termo}: " + " ".join([f"{doc},{freq}" for doc, freq in doc_freq_pairs])
-            f.write(linha + '\n')
+            if doc_freq_pairs:
+                linha = f"{termo.lower()}: " + " ".join([f"{doc},{freq}" for doc, freq in doc_freq_pairs])  # Salvamos o termo em minúsculas
+                f.write(linha + '\n')
+            else:
+                print(f"Warning: Term '{termo}' has no associated documents and will be skipped.")
 
 def salvar_resposta(documentos):
     with open('resposta.txt', 'w', encoding='utf-8') as f:
